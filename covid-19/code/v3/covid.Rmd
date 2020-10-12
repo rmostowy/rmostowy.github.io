@@ -1,0 +1,212 @@
+---
+output: html_document
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE,message=FALSE, cache=FALSE)
+```
+
+```{r setup, include=FALSE}
+suppressWarnings(suppressPackageStartupMessages(library(EpiEstim)))
+suppressWarnings(suppressPackageStartupMessages(library(RColorBrewer)))
+suppressWarnings(suppressPackageStartupMessages(library(lubridate)))
+suppressWarnings(suppressPackageStartupMessages(library(reshape2)))
+suppressWarnings(suppressPackageStartupMessages(library(ggplot2)))
+suppressWarnings(suppressPackageStartupMessages(library(cowplot)))
+suppressWarnings(suppressPackageStartupMessages(library(readxl)))
+theme_set(theme_grey())
+```
+
+```{r load data, include=FALSE}
+covid19.xlsx.total <- read_xlsx("../data/covid19-pl.xlsx", sheet = 2)
+covid19.xlsx.wojew <- read_xlsx("../data/covid19-pl.xlsx", sheet = 6)
+
+dates <- ymd(covid19.xlsx.total$Data)
+incidence.total <- covid19.xlsx.total$`Nowe przypadki`
+covid.incidence <- data.frame(dates, I = incidence.total)
+most.recent.date <- dates[length(dates)]
+
+wojewodztwa <- unique(covid19.xlsx.wojew$...1)
+wojewodztwa <- wojewodztwa[!is.na(wojewodztwa)]
+wojewodztwa <- wojewodztwa[!wojewodztwa %in% c("(kliknij)", "Województwo", "Polska", "Polska bez Śląska", "POLSKA")]
+wojewodztwa <- sort(wojewodztwa)
+n <- length(wojewodztwa)
+
+from <- which(covid19.xlsx.wojew$...1 == "Województwo")[1]
+to <- which(covid19.xlsx.wojew$...1 == "Polska")[1]
+covid19.xlsx.wojew <- covid19.xlsx.wojew[from:(to-1),]
+
+wojewodztwa.dates <- covid19.xlsx.wojew[which(covid19.xlsx.wojew$...1 == "Województwo"),-1]
+wojewodztwa.dates <- as.numeric(wojewodztwa.dates)
+wojewodztwa.dates <- wojewodztwa.dates[!is.na(wojewodztwa.dates)]
+wojewodztwa.dates <- as.Date(wojewodztwa.dates, origin = "1899-12-30")
+
+wojewodztwa.incidence <- sapply(1:n, function(wojewodztwo.index){
+  this.wojewodztwo <- wojewodztwa[wojewodztwo.index]
+  this.wojewodztwo.row <- which(covid19.xlsx.wojew$...1 == this.wojewodztwo)
+  this.wojewodztwo.incidence <- as.numeric(covid19.xlsx.wojew[this.wojewodztwo.row, 1:length(wojewodztwa.dates)+1])
+  this.wojewodztwo.incidence
+})
+
+covid.incidence.wojewodztwa <- data.frame(dates = wojewodztwa.dates, wojewodztwa.incidence)
+colnames(covid.incidence.wojewodztwa)[-1] <- wojewodztwa
+
+```
+
+```{r fit epi model, include=FALSE}
+# The model
+epiestim2rtable <- function(epiestim.fit){
+  out <- NULL
+  if(nrow(epiestim.fit$R)>0)
+    out <- data.frame(time = epiestim.fit$dates[epiestim.fit$R$t_end],
+                      R = epiestim.fit$R$`Mean(R)`,
+                      R.ci.lower = epiestim.fit$R$`Quantile.0.025(R)`,
+                      R.ci.upper = epiestim.fit$R$`Quantile.0.975(R)`
+    )
+  return(out)
+}
+
+epiestim.config.file <- make_config(
+  list(mean_si = 3.96, 
+       std_si = 4.75
+  ))
+
+epiestim.fit.total <- estimate_R(covid.incidence, 
+                  method = "parametric_si",
+                  config = epiestim.config.file
+                  )
+r.total <- epiestim2rtable(epiestim.fit.total)
+
+epiestim.fit.wojew <- lapply(1:n, function(wojew.index, no.last.days = 40){
+  this.wojew <- wojewodztwa[wojew.index]
+  this.wojew.incidence <- data.frame(dates = covid.incidence.wojewodztwa$dates,
+                                     I = covid.incidence.wojewodztwa[,which(colnames(covid.incidence.wojewodztwa) == this.wojew)])
+  this.wojew.fit <- estimate_R(this.wojew.incidence, 
+                               method = "parametric_si",
+                               config = epiestim.config.file
+  )
+  out <- epiestim2rtable(this.wojew.fit)
+  out$wojew <- this.wojew
+  out <- out[(nrow(out)-no.last.days):nrow(out),]
+  out
+})
+
+epiestim.fit.wojew.rbind <- do.call(rbind.data.frame, epiestim.fit.wojew)
+
+r.latest <- lapply(1:n, function(wojew.index){
+  this.wojew.df <- epiestim.fit.wojew[[wojew.index]]
+  this.wojew.df[nrow(this.wojew.df),-1]  
+})
+r.latest <- do.call(rbind.data.frame, r.latest)
+r.latest <- r.latest[order(r.latest$R),]
+
+r.latest.pl <- r.total[nrow(r.total),-1]
+r.latest.pl$wojew <- "Polska"
+r.latest <- rbind(r.latest.pl, r.latest)
+rownames(r.latest) <- NULL
+r.latest$wojew <- factor(r.latest$wojew, levels = r.latest$wojew)
+
+```
+
+
+```{r main, include=FALSE}
+##################
+## Plot
+##################
+
+time.month <- month(r.total$time)
+time.month.unique <- unique(time.month)
+time.breaks <- sapply(1:length(time.month.unique), function(k){
+  this.date <- r.total$time[which(time.month.unique[k] == time.month)[1]]
+  paste(year(this.date),month(this.date),day(this.date), sep = "-")
+})
+time.breaks <- ymd(time.breaks)
+time.labels <- format(time.breaks, "%d/%m")
+
+this.plot.col <- brewer.pal(9, "Paired")[2]
+p <- ggplot(data = r.total, aes(x = time, y = R)) + geom_line(size = 1, col = this.plot.col)
+p <- p + geom_ribbon(aes(ymin=R.ci.lower,ymax=R.ci.upper), alpha=0.3, fill = this.plot.col)
+p <- p + geom_hline(yintercept = 1, linetype = "dashed", col = this.plot.col)
+p <- p + scale_x_time(breaks = time.breaks, labels = time.labels)
+p.rt <- p + labs(x = "miesiąc 2020", y = "Współczynnik R(t)")
+
+
+p <- ggplot(data = epiestim.fit.wojew.rbind, aes(x = time, y = R)) + geom_line(size = 1)
+p <- p + geom_ribbon(aes(ymin=R.ci.lower,ymax=R.ci.upper), alpha=0.3)
+p <- p + geom_hline(yintercept = 1, linetype = "dashed")
+p <- p + facet_wrap( ~ wojew, ncol = 4)
+p <- p + scale_x_time(breaks = time.breaks, labels = time.labels)
+p.rt.wojew <- p + labs(x = "miesiąc 2020", y = "Współczynnik R(t)")
+
+
+# r.latest$R[3] <- 0.6
+# r.latest$R.ci.lower[3] <- 0.5
+# r.latest$R.ci.upper[3] <- 0.9
+
+this.col.red <- brewer.pal(9, "Paired")[6]
+this.col.green <- brewer.pal(9, "Paired")[4]
+
+p <- ggplot(r.latest, aes(x = wojew, y = R, col = R > 1))
+p <- p + geom_point(size = 2, alpha = 0.99)
+p <- p + scale_colour_manual(values = setNames(c(this.col.red,this.col.green),c(T, F)))
+p <- p + geom_errorbar(aes(ymin = R.ci.lower, ymax = R.ci.upper), width = 0.0)
+p <- p + geom_hline(yintercept = 1, linetype = "dashed", size = 1.2)
+p <- p + scale_y_continuous(limits = c(0.2, 2))
+p <- p + theme_minimal() + guides(col = FALSE)
+p <- p + theme(axis.text.x = element_text(angle = 40, hjust = 1)) #+ theme_minimal()
+p.rt.latest <- p + labs(x = "", y = "Współczynnik R(t)")
+
+```
+
+# Szacunek efektywnego współczynnika reprodukcji R dla COVID-19 w Polsce
+### **Rafał J. Mostowy**
+#### Małopolskie Centrum Biotechnologii Uniwersytetu Jagiellońskiego, Kraków, Polska
+#### Data ostatniej aktualizacji: `r format(most.recent.date, "%d/%m/%Y")`
+#### Adres korespondencyjny: rafal.mostowy@uj.edu.pl
+
+## Wprowadzenie
+Pandemia COVID-19 rozpoczęła się w Polsce oficjalnie 4 marca 2020, kiedy to został zarejestrowany i potwierdzony pierwszy przypadek osoby zakażonej wirusem SARS-CoV-2. Jednym z kluczowych parametrów rozwoju epidemii jest tzw. *współczynnik reprodukcji* $R$, który jest miarą średniej ilości drugorzędnych zakażeń przez jedną osobę zakażoną podczas cyklu infekcji. Gdy $R>1$, epidemia rozwija się, ponieważ liczba przypadków namnaża się; gdy $R<1$ epidemia wygasa, ponieważ zakażonych ubywa szybciej, niż przybywa; gdy $R\sim1$ mamy do czynienia z sytuacją endemiczną. Na samym początku epidemii, czyli gdy $t=0$, populacja jest zazwyczaj całkowicie podatna na infekcję i wtedy mówimy o bazowym współczynniku reprodukcji $R_0$, który często interpretowany jest jako stopień zakaźności danej choroby (porównanie wartości $R_0$ dla różnych chorób zakaźnych można prezczytać na [Wikipedii](https://en.wikipedia.org/wiki/Basic_reproduction_number)). Potem, gdy wirus rozprzestrzeni się w populacji, mamy do czynienia z **efektywnym współczynniku reprodukcji**, $R(t)$, który określa obecny stan rozwoju epidemii. 
+
+Szacowanie $R(t)$ w praktyce jest skomplikowane, ponieważ opiera się na dopasowaniu modeli matematycznych, opartych na wielu założeniach, do (często niedoskonałych) danych epidemicznych. Takie modele bardzo często nie nadają się do szacowania parametru $R(t)$ w czasie rzeczywistym, a ich zastosowanie do tego typu obliczeń może spowodować w niedoszacowanie lub przeszacowanie tego parametru [1]. Żeby zminimalizować ten problem, zalecane są więc metody, które opierają się na pomiarze dynamiki zakażeń w czasie rzeczywistym na podstawie empirycznego rozkładu czasu pomiędzy dwoma następującymi po sobie przypadkami zakażeń (tzw. interwał seryjny) opracowanego przez Anne Cori et al. [2]. Używając tego podejścia, tutaj szacuję parametr $R(t)$ zakładając średni interwał seryjny w o średniej wartości 3.96 dnia oraz odchylenia standardowego w wysokości 4.75 dnia [3-4]. Pomiar wykonuję dla całej Polski oraz poszczególnych województw bazując na danych dotyczących liczby osób z potwierdzonym zakażeniem wirusa podawanych do informacji publicznej przez Ministerstwo Zdrowia poprzez [stronę internetową](https://www.gov.pl/web/koronawirus) oraz [media społecznościowe](https://twitter.com/MZ_GOV_PL), zebranych i upublicznionych przez pana [Michała Rogalskiego](https://twitter.com/micalrg) pod [tym linkiem](https://docs.google.com/spreadsheets/d/1ierEhD6gcq51HAm433knjnVwey4ZE5DCnu1bW7PRG3E/edit#gid=1400401584). Analiza ta uwzględnia dane aż do `r format(most.recent.date, "%d/%m/%Y")`.
+
+## Wyniki
+### Jak współczynnik reprodukcji R(t) zmieniał się w czasie w Polsce?
+Wykres przedstawia $R(t)$ szacowane w czasie rzeczywistym (wartość średnia plus przedział nieufności statystycznej 95%).
+```{r plot_fig1, fig.width = 7, fig.height = 4, echo=FALSE, fig.align='center'}
+p.rt
+```
+
+### Jak współczynnik reprodukcji R(t) zmieniał się w czasie w różnych województwach?
+Jak wyżej tylko z podziałem na 16 województw.
+```{r plot_fig2, fig.width = 8, fig.height = 6, echo=FALSE, fig.align='center'}
+p.rt.wojew
+```
+
+### Jak wyglądają najnowsze szacunki współczynnika reprodukcji R(t)?
+Obecna wartość $R(t)$ dla Polski wynosi `r signif(r.latest.pl$R, d=3)` (95% CI: `r signif(r.latest.pl$R.ci.lower, d=3)` - `r signif(r.latest.pl$R.ci.upper, d=3)`). Poniżej porównanie tego szacunku (lewa strona) z poszczególnymi województwami.
+```{r plot_fig3, fig.width = 6, fig.height = 5, echo=FALSE, fig.align='center'}
+p.rt.latest
+```
+
+
+## Najczęściej zadawane pytania (FAQ)
+* **Czy ten model może posłużyć do predykcji pandemii COVID-19 w Polsce?** Niestety nie. Ta analiza służy jedynie do pomiaru obecnej sytuacji epidemicznej, a konkretnie tego, czy epidemia się rozwija czy zanika. Z pandemią jest trochę jak z giełdą, mianowicie przyszłość w dużym stopniu zależy od naszych reakcji na obecną sytuację (np. indywidualnych zachowań lub interwencji rządowych). Dlatego nawet najlepsza prognoza sprawdzi się przez co najwyżej kilka dni.
+
+* **Jakie są główne założenia tej analizy?** Najważniejszym założeniem jest to, że ilość wykrywanych zakażeń jest reprezentatywna względem wszystkich przypadków w Polsce. W praktyce liczba wykonwywanych testów zmienia się każdego dnia (choć od jakiegoś czasu utrzymuje się na stosunkowo stabilnym poziomie). Spodziewamy się też, że osoby symptomatyczne z większym prawdopodobieństwem wykryją u siebie zakażenie.
+
+
+
+## Referencje
+1. Practical considerations for measuring the effective reproductive number, Rt.
+Katelyn M Gostic, Lauren McGough, Edward Baskerville, Sam Abbott, Keya Joshi, Christine Tedijanto, Rebecca Kahn, Rene Niehus, James A Hay, Pablo M. De Salazar, Joel Hellewell, Sophie Meakin, James Munday, Nikos Bosse, Katharine Sherratt, Robin M Thompson, Laura F White, Jana Huisman, Jérémie Scire, Sebastian Bonhoeffer, Tanja Stadler, Jacco Wallinga, Sebastian Funk, Marc Lipsitch, Sarah Cobey. medRxiv 2020.06.18.20134858
+
+2. Cori, A., Ferguson, N. M., Fraser, C., & Cauchemez, S. (2013). A new framework and software to estimate time-varying reproduction numbers during epidemics. American journal of epidemiology, 178(9), 1505-1512.
+
+3. Du, Z., Xu, X., Wu, Y., Wang, L., Cowling, B. J., & Meyers, L. A. (2020). Serial interval of COVID-19 among publicly reported confirmed cases. Emerging infectious diseases, 26(6), 1341.
+
+4. Nishiura, H., Linton, N. M., & Akhmetzhanov, A. R. (2020). Serial interval of novel coronavirus (COVID-19) infections. International journal of infectious diseases.
+
+<!-- library(knitr) -->
+<!-- library(markdown) -->
+<!-- knit("master.Rmd") -->
+<!-- markdownToHTML("master.md","/Users/rmostowy/GitHub/rmostowy.github.io/covid-19/projections-poland/index.html", fragment.only=TRUE) -->
