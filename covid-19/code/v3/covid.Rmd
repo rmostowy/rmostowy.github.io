@@ -24,26 +24,28 @@ covid19.xlsx.wojew <- read_xlsx("../data/covid19-pl.xlsx", sheet = 6)
 dates <- ymd(covid19.xlsx.total$Data)
 incidence.total <- covid19.xlsx.total$`Nowe przypadki`
 covid.incidence <- data.frame(dates, I = incidence.total)
+covid.incidence <- covid.incidence[-nrow(covid.incidence),]
 most.recent.date <- dates[length(dates)]
 
-wojewodztwa <- unique(covid19.xlsx.wojew$...1)
+wojewodztwa <- unique(covid19.xlsx.wojew$MENU)
 wojewodztwa <- wojewodztwa[!is.na(wojewodztwa)]
 wojewodztwa <- wojewodztwa[!wojewodztwa %in% c("(kliknij)", "Województwo", "Polska", "Polska bez Śląska", "POLSKA")]
 wojewodztwa <- sort(wojewodztwa)
 n <- length(wojewodztwa)
 
-from <- which(covid19.xlsx.wojew$...1 == "Województwo")[1]
-to <- which(covid19.xlsx.wojew$...1 == "Polska")[1]
+from <- which(covid19.xlsx.wojew$MENU == "Województwo")[1]
+to <- which(covid19.xlsx.wojew$MENU == "Polska")[1]
 covid19.xlsx.wojew <- covid19.xlsx.wojew[from:(to-1),]
 
-wojewodztwa.dates <- covid19.xlsx.wojew[which(covid19.xlsx.wojew$...1 == "Województwo"),-1]
+wojewodztwa.dates <- covid19.xlsx.wojew[which(covid19.xlsx.wojew$MENU == "Województwo"),-1]
 wojewodztwa.dates <- as.numeric(wojewodztwa.dates)
 wojewodztwa.dates <- wojewodztwa.dates[!is.na(wojewodztwa.dates)]
 wojewodztwa.dates <- as.Date(wojewodztwa.dates, origin = "1899-12-30")
+wojewodztwa.dates <- wojewodztwa.dates[-length(wojewodztwa.dates)]
 
 wojewodztwa.incidence <- sapply(1:n, function(wojewodztwo.index){
   this.wojewodztwo <- wojewodztwa[wojewodztwo.index]
-  this.wojewodztwo.row <- which(covid19.xlsx.wojew$...1 == this.wojewodztwo)
+  this.wojewodztwo.row <- which(covid19.xlsx.wojew$MENU == this.wojewodztwo)
   this.wojewodztwo.incidence <- as.numeric(covid19.xlsx.wojew[this.wojewodztwo.row, 1:length(wojewodztwa.dates)+1])
   this.wojewodztwo.incidence
 })
