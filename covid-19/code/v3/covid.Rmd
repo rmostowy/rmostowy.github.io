@@ -41,7 +41,7 @@ wojewodztwa.dates <- covid19.xlsx.wojew[which(covid19.xlsx.wojew$MENU == "WojewÃ
 wojewodztwa.dates <- as.numeric(wojewodztwa.dates)
 wojewodztwa.dates <- wojewodztwa.dates[!is.na(wojewodztwa.dates)]
 wojewodztwa.dates <- as.Date(wojewodztwa.dates, origin = "1899-12-30")
-wojewodztwa.dates <- wojewodztwa.dates[-length(wojewodztwa.dates)]
+# wojewodztwa.dates <- wojewodztwa.dates[-length(wojewodztwa.dates)]
 
 wojewodztwa.incidence <- sapply(1:n, function(wojewodztwo.index){
   this.wojewodztwo <- wojewodztwa[wojewodztwo.index]
